@@ -11,22 +11,14 @@ import logging
 import requests
 from fastapi import HTTPException
 from fastapi.security.utils import get_authorization_scheme_param
+
 from jose import JWTError, jwt
 from jose.exceptions import JWKError
 from starlette.requests import Request
 from starlette.status import HTTP_401_UNAUTHORIZED
 
 from dispatch.case import service as case_service
-from dispatch.config import (
-    DISPATCH_AUTHENTICATION_PROVIDER_HEADER_NAME,
-    DISPATCH_AUTHENTICATION_PROVIDER_PKCE_JWKS,
-    DISPATCH_JWT_AUDIENCE,
-    DISPATCH_JWT_EMAIL_OVERRIDE,
-    DISPATCH_JWT_SECRET,
-    DISPATCH_PKCE_DONT_VERIFY_AT_HASH,
-    DISPATCH_UI_URL,
-)
-from dispatch.database.core import Base
+from dispatch.config import DISPATCH_UI_URL
 from dispatch.document.models import Document, DocumentRead
 from dispatch.incident import service as incident_service
 from dispatch.incident.models import Incident
@@ -34,18 +26,29 @@ from dispatch.individual import service as individual_service
 from dispatch.individual.models import IndividualContact, IndividualContactRead
 from dispatch.plugin import service as plugin_service
 from dispatch.plugins import dispatch_core as dispatch_plugin
-from dispatch.plugins.bases import (
-    AuthenticationProviderPlugin,
-    ContactPlugin,
-    DocumentResolverPlugin,
-    ParticipantPlugin,
-    TicketPlugin,
-)
 from dispatch.route import service as route_service
 from dispatch.service import service as service_service
 from dispatch.service.models import Service, ServiceRead
 from dispatch.team import service as team_service
 from dispatch.team.models import TeamContact, TeamContactRead
+
+from dispatch.plugins.bases import (
+    ParticipantPlugin,
+    DocumentResolverPlugin,
+    AuthenticationProviderPlugin,
+    TicketPlugin,
+    ContactPlugin,
+)
+
+from dispatch.config import (
+    DISPATCH_AUTHENTICATION_PROVIDER_PKCE_JWKS,
+    DISPATCH_AUTHENTICATION_PROVIDER_HEADER_NAME,
+    DISPATCH_PKCE_DONT_VERIFY_AT_HASH,
+    DISPATCH_JWT_SECRET,
+    DISPATCH_JWT_AUDIENCE,
+    DISPATCH_JWT_EMAIL_OVERRIDE,
+)
+
 
 log = logging.getLogger(__name__)
 
@@ -73,9 +76,7 @@ class BasicAuthProviderPlugin(AuthenticationProviderPlugin):
         try:
             data = jwt.decode(token, DISPATCH_JWT_SECRET)
         except (JWKError, JWTError) as e:
-            raise HTTPException(
-                status_code=HTTP_401_UNAUTHORIZED, detail=[{"msg": str(e)}]
-            ) from None
+            raise HTTPException(status_code=HTTP_401_UNAUTHORIZED, detail=[{"msg": str(e)}])
         return data["email"]
 
 
@@ -172,7 +173,7 @@ class DispatchTicketPlugin(TicketPlugin):
         incident = incident_service.get(db_session=db_session, incident_id=incident_id)
 
         resource_id = (
-            f"dispatch-{incident.project.organization.slug}-{incident.project.slug}-{incident.id}"
+            f"concentrix-{incident.project.organization.slug}-{incident.project.slug}-{incident.id}"
         )
         return {
             "resource_id": resource_id,
@@ -196,7 +197,7 @@ class DispatchTicketPlugin(TicketPlugin):
         storage_weblink: str,
         conference_weblink: str,
         cost: float,
-        incident_type_plugin_metadata: dict = None,
+        incident_type_plugin_metadata: dict = {},
     ):
         """Updates a Dispatch incident ticket."""
         return
@@ -235,7 +236,7 @@ class DispatchTicketPlugin(TicketPlugin):
         # reporter_email: str,
         document_weblink: str,
         storage_weblink: str,
-        case_type_plugin_metadata: dict = None,
+        case_type_plugin_metadata: dict = {},
     ):
         """Updates a Dispatch case ticket."""
         return
@@ -257,10 +258,7 @@ class DispatchDocumentResolverPlugin(DocumentResolverPlugin):
     ):
         """Fetches documents from Dispatch."""
         recommendation = route_service.get(
-            db_session=db_session,
-            project_id=incident.project_id,
-            class_instance=incident,
-            models=[(Document, DocumentRead)],
+            db_session=db_session, incident=incident, models=[(Document, DocumentRead)]
         )
         return recommendation.matches
 
@@ -297,8 +295,7 @@ class DispatchParticipantResolverPlugin(ParticipantPlugin):
 
     def get(
         self,
-        project_id: int,
-        class_instance: Base,
+        incident: Incident,
         db_session=None,
     ):
         """Fetches participants from Dispatch."""
@@ -307,12 +304,7 @@ class DispatchParticipantResolverPlugin(ParticipantPlugin):
             (Service, ServiceRead),
             (TeamContact, TeamContactRead),
         ]
-        recommendation = route_service.get(
-            db_session=db_session,
-            project_id=project_id,
-            class_instance=class_instance,
-            models=models,
-        )
+        recommendation = route_service.get(db_session=db_session, incident=incident, models=models)
 
         log.debug(f"Recommendation: {recommendation}")
 
@@ -321,17 +313,13 @@ class DispatchParticipantResolverPlugin(ParticipantPlugin):
         for match in recommendation.matches:
             if match.resource_type == TeamContact.__name__:
                 team = team_service.get_or_create(
-                    db_session=db_session,
-                    email=match.resource_state["email"],
-                    project=class_instance.project,
+                    db_session=db_session, email=match.resource_state["email"], incident=incident
                 )
                 team_contacts.append(team)
 
             if match.resource_type == IndividualContact.__name__:
                 individual = individual_service.get_or_create(
-                    db_session=db_session,
-                    email=match.resource_state["email"],
-                    project=class_instance.project,
+                    db_session=db_session, email=match.resource_state["email"], incident=incident
                 )
 
                 individual_contacts.append((individual, None))
@@ -341,7 +329,7 @@ class DispatchParticipantResolverPlugin(ParticipantPlugin):
                 plugin_instance = plugin_service.get_active_instance_by_slug(
                     db_session=db_session,
                     slug=match.resource_state["type"],
-                    project_id=project_id,
+                    project_id=incident.project.id,
                 )
 
                 if plugin_instance:
@@ -353,7 +341,7 @@ class DispatchParticipantResolverPlugin(ParticipantPlugin):
                         service = service_service.get_by_external_id_and_project_id(
                             db_session=db_session,
                             external_id=match.resource_state["external_id"],
-                            project_id=project_id,
+                            project_id=incident.project_id,
                         )
                         if service.is_active:
                             individual_email = plugin_instance.instance.get(
@@ -361,9 +349,7 @@ class DispatchParticipantResolverPlugin(ParticipantPlugin):
                             )
 
                             individual = individual_service.get_or_create(
-                                db_session=db_session,
-                                email=individual_email,
-                                project=class_instance.project,
+                                db_session=db_session, email=individual_email, incident=incident
                             )
 
                             individual_contacts.append((individual, match.resource_state["id"]))
