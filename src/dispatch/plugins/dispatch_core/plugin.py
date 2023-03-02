@@ -170,7 +170,7 @@ class DispatchTicketPlugin(TicketPlugin):
         incident = incident_service.get(db_session=db_session, incident_id=incident_id)
 
         resource_id = (
-            f"dispatch-{incident.project.organization.slug}-{incident.project.slug}-{incident.id}"
+            f"concentrix-{incident.project.organization.slug}-{incident.project.slug}-{incident.id}"
         )
         return {
             "resource_id": resource_id,
