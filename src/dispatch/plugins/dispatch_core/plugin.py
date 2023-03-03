@@ -211,7 +211,7 @@ class DispatchTicketPlugin(TicketPlugin):
         """Creates a Dispatch case ticket."""
         case = case_service.get(db_session=db_session, case_id=case_id)
 
-        resource_id = f"dispatch-{case.project.organization.slug}-{case.project.slug}-{case.id}"
+        resource_id = f"concentrix-{case.project.organization.slug}-{case.project.slug}-{case.id}"
 
         return {
             "resource_id": resource_id,
